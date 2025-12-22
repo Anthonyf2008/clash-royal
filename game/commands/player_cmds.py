@@ -25,3 +25,4 @@ def setup_player_cmds(bot: commands.Bot):
     async def mycards(ctx):
         player = get_player(ctx.author, players)   # ✅ fixed
         await ctx.send(f"🃏 Your cards: {', '.join(player.cards)}")
+

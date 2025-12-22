@@ -8,3 +8,4 @@ def setup_all_commands(bot):
     setup_deck_cmds(bot)
     setup_player_cmds(bot)
     setup_match_cmds(bot)
+

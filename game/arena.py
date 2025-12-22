@@ -279,3 +279,4 @@ class Arena:
             if tower_set["king"]["hp"] <= 0:
                 return owner_id
         return None
+

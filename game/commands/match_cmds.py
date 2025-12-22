@@ -145,3 +145,4 @@ def setup_match_cmds(bot: commands.Bot):
             msg += f"{i}. {p.user.display_name} — {p.trophies} trophies | {p.wins} wins | {p.coins} coins (Arena {p.arena})\n"
 
         await ctx.send(msg)
+

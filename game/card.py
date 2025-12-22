@@ -227,3 +227,4 @@ cards = {
         "special": "spawn goblins", "emoji": "🛢️"
     }
 }
+

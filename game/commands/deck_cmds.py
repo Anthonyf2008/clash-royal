@@ -79,3 +79,4 @@ def setup_deck_cmds(bot: commands.Bot):
         embed.set_image(url="attachment://deck.png")
 
         await ctx.send(file=file, embed=embed)
+

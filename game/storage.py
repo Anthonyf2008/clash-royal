@@ -71,3 +71,4 @@ def load_players():
         players[int(uid)] = p
 
     return players
+

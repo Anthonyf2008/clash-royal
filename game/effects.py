@@ -46,3 +46,4 @@ def apply_effect(card, player, opponent):
 
         # Debugging/logging
         print(f"Effect applied: {s} by {player.user.display_name}")
+
