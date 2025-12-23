@@ -52,12 +52,37 @@ class Match:
     # -----------------------------------------------------
 
     def place_unit_for_player(self, owner_id: int, row: int, col: int, unit: dict) -> bool:
+        # bounds + empty
         if not self.arena.in_bounds(row, col):
             return False
         if self.arena.get(row, col) is not None:
             return False
 
-        # store minimal required data on the unit
+        # can't place on river columns (water OR bridge)
+        if hasattr(self.arena, "is_river_column") and self.arena.is_river_column(col):
+            return False
+
+        # can't place on towers
+        if hasattr(self.arena, "is_tower_cell") and self.arena.is_tower_cell(row, col):
+            return False
+
+        # must place on your side (HORIZONTAL)
+        # P1 = left side, P2 = right side
+        left_river = self.arena.river_left_col() if hasattr(self.arena, "river_left_col") else (
+                    self.arena.width // 2 - 1)
+        right_river = self.arena.river_right_col() if hasattr(self.arena, "river_right_col") else (
+                    self.arena.width // 2)
+
+        if owner_id == self.arena.p1_id:
+            # left player can only place left of the river
+            if col >= left_river:
+                return False
+        else:
+            # right player can only place right of the river
+            if col <= right_river:
+                return False
+
+        # store unit data (defaults)
         unit["owner"] = owner_id
         unit.setdefault("hp", 100)
         unit.setdefault("damage", 50)
@@ -86,10 +111,10 @@ class Match:
                     continue
 
                 owner = tile["owner"]
-                direction = 1 if owner == self.arena.p1_id else -1
+                direction = 1 if owner == self.arena.p1_id else -1  # P1 goes RIGHT, P2 goes LEFT
 
-                target_r = r + direction
-                target_c = c
+                target_r = r
+                target_c = c + direction
 
                 if not self.arena.in_bounds(target_r, target_c):
                     new_grid[r][c] = tile
@@ -229,39 +254,92 @@ async def process_ai_turn(ctx, match):
     ai = match.current_player()
 
     # 50% chance to play a card
-    play_card = random.random() < 0.50
+    if random.random() >= 0.50:
+        match.step_turn()
+        await ctx.send(render_arena_emoji(match.arena))
+        winner = match.check_win()
+        if winner:
+            await end_match(ctx, match, winner, match.opponent())
+            return
+        match.next_turn()
+        return
 
-    if play_card and ai.deck:
-        card_name = random.choice(ai.deck)
-        card_data = cards.get(card_name)
+    if not ai.deck:
+        match.step_turn()
+        await ctx.send(render_arena_emoji(match.arena))
+        winner = match.check_win()
+        if winner:
+            await end_match(ctx, match, winner, match.opponent())
+            return
+        match.next_turn()
+        return
 
-        if card_data:
-            card = Card(card_name, card_data)
+    # Pick a random playable card (energy + cooldown)
+    playable = []
+    for name in ai.deck:
+        data = cards.get(name)
+        if not data:
+            continue
+        c = Card(name, data)
+        if c.can_play(ai):
+            playable.append(c)
 
-            if card.can_play(ai):
-                owner_id = ai.user.id
-                direction = 1 if owner_id == match.arena.p1_id else -1
+    if not playable:
+        await ctx.send("🤖 **ClashAI** has no playable cards and skips.")
+        match.step_turn()
+        await ctx.send(render_arena_emoji(match.arena))
+        winner = match.check_win()
+        if winner:
+            await end_match(ctx, match, winner, match.opponent())
+            return
+        match.next_turn()
+        return
 
-                if direction == -1:
-                    possible_rows = list(range(match.arena.height - 4, match.arena.height - 1))
-                else:
-                    possible_rows = list(range(1, 4))
+    card = random.choice(playable)
+    owner_id = ai.user.id
 
-                placed = False
-                attempts = 0
+    # -------------------------
+    # HORIZONTAL placement rules
+    # -------------------------
+    # River columns (2 middle columns)
+    river_cols = getattr(match.arena, "river_cols", [match.arena.width // 2 - 1, match.arena.width // 2])
+    left_river = min(river_cols)
+    right_river = max(river_cols)
 
-                while not placed and attempts < 20:
-                    attempts += 1
-                    r = random.choice(possible_rows)
-                    c = random.randint(0, match.arena.width - 1)
+    # AI side deploy columns (stay away from river by 1 tile)
+    if owner_id == match.arena.p1_id:
+        # left player deploys on left side
+        possible_cols = list(range(0, max(0, left_river - 1)))
+    else:
+        # right player deploys on right side
+        possible_cols = list(range(min(match.arena.width - 1, right_river + 1), match.arena.width))
 
-                    if match.arena.get(r, c) is None:
-                        unit = card.create_unit(owner_id)
-                        if match.place_unit_for_player(owner_id, r, c, unit):
-                            card.apply_cost(ai)
-                            ai.add_cooldown(card.name)
-                            await ctx.send(f"🤖 **ClashAI** played **{card.name}** at ({r}, {c})")
-                            placed = True
+    # Any row is allowed (you can restrict later if you want lanes)
+    possible_rows = list(range(0, match.arena.height))
+
+    placed = False
+    attempts = 0
+
+    while not placed and attempts < 50:
+        attempts += 1
+        r = random.choice(possible_rows)
+        c = random.choice(possible_cols)
+
+        # quick rejects
+        if c in river_cols:
+            continue
+        if match.arena.get(r, c) is not None:
+            continue
+
+        unit = card.create_unit(owner_id)
+        if match.place_unit_for_player(owner_id, r, c, unit):
+            card.apply_cost(ai)
+            ai.add_cooldown(card.name)
+            await ctx.send(f"🤖 **ClashAI** played **{card.name}** at ({r}, {c})")
+            placed = True
+
+    if not placed:
+        await ctx.send("🤖 **ClashAI** couldn't find a valid tile and skips.")
 
     # Resolve movement + combat + towers
     match.step_turn()
@@ -272,10 +350,10 @@ async def process_ai_turn(ctx, match):
     # Check win
     winner = match.check_win()
     if winner:
-        loser = match.opponent()
-        await end_match(ctx, match, winner, loser)
+        await end_match(ctx, match, winner, match.opponent())
         return
 
-    # Pass turn back to human
+    # Pass turn
     match.next_turn()
+
 

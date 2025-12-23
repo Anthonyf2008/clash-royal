@@ -43,6 +43,23 @@ def tile_to_emoji(tile: Optional[dict]) -> str:
         return "⬜"
 
     if isinstance(tile, dict):
+        # Terrain-only tiles (from animation frames, etc.)
+        if "type" not in tile and "emoji" in tile:
+            return tile["emoji"]
+
+        # Tower tiles
+        if tile.get("type") == "tower":
+            if tile.get("name") == "king":
+                return tile.get("emoji", "👑")
+            return tile.get("emoji", "🏰")
+
+        # Units
+        return tile.get("emoji", "❓")
+
+    return "❓"
+
+
+    if isinstance(tile, dict):
         # Tower tiles
         if tile.get("type") == "tower":
             if tile.get("name") == "king":
@@ -186,63 +203,65 @@ def outline_tile(base: str, owner_id: int, arena: Arena) -> str:
 
 def render_arena_emoji(arena: Arena, match: Optional[object] = None) -> str:
     """
-    Render the arena as a Clash Royale style board:
-    - Colored sides (P1 vs P2)
-    - River row with two bridges
-    - Towers injected from arena.towers
-    - Optional tower HP lines
-    - Optional elixir bars (if match is provided)
+    Horizontal Clash Royale board WITH COORDINATES:
+    - Columns labeled 1–16 on top
+    - Rows labeled A–L on the left
+    - P1 = left side (🟩), P2 = right side (🟪)
+    - River = middle columns (🟦) with bridges at C & J (🟫)
     """
 
-    # 1. Clear old tower tiles so we don't duplicate
+    # ---------------------------------------------------------
+    # Clear old tower tiles (avoid duplication)
+    # ---------------------------------------------------------
     for r in range(arena.height):
         for c in range(arena.width):
             tile = arena.get(r, c)
             if isinstance(tile, dict) and tile.get("type") == "tower":
                 arena.set(r, c, None)
 
-    # 2. Inject towers freshly
     arena.place_towers_on_grid()
 
     lines: list[str] = []
 
-    # Layout constants
-    river_row = arena.height // 2        # middle row == river
-    bridge_cols = [arena.width // 4, arena.width - arena.width // 4 - 1]
+    river_cols = getattr(arena, "river_cols", [arena.width // 2 - 1, arena.width // 2])
+    bridge_rows = getattr(arena, "bridge_rows", [2, 9])  # C and J
 
-    # Top border (sky/walls)
-    border = "🟦" * arena.width
-    lines.append(border)
+    # ---------------------------------------------------------
+    # Column header (1–16)
+    # ---------------------------------------------------------
+    header = "   "  # space for row labels
+    for i in range(arena.width):
+        header += f"{(i+1)%10}"  # keeps spacing clean in Discord
+    lines.append(header)
 
-    # 3. Grid rows
+    # Top border
+    lines.append("   " + "🟦" * arena.width)
+
+    # ---------------------------------------------------------
+    # Grid rows
+    # ---------------------------------------------------------
     for r in range(arena.height):
+        row_label = chr(ord("A") + r) + "  "  # A–L
         row_tiles: list[str] = []
+
         for c in range(arena.width):
             tile = arena.get(r, c)
 
-            # Base tile coloring
-            if r == river_row:
-                # River row
-                if c in bridge_cols:
-                    base = "🟫"  # bridge
-                else:
-                    base = "🟦"  # water
+            # ---- base terrain ----
+            if c in river_cols:
+                base = "🟫" if r in bridge_rows else "🟦"
             else:
-                # Player sides
-                if r < river_row:
-                    base = "🟩"  # P1 side
-                else:
-                    base = "🟪"  # P2 side
+                base = "🟩" if c < river_cols[0] else "🟪"
 
-                # Lane markers (subtle dots at mid lanes)
-                lane_left = arena.width // 3
-                lane_right = arena.width - arena.width // 3 - 1
-                if c == lane_left or c == lane_right:
-                    if tile is None:
-                        base = "▫️"
+            # Optional lane markers
+            if tile is None:
+                lane_top = arena.height // 3
+                lane_bot = arena.height - arena.height // 3 - 1
+                if r in (lane_top, lane_bot) and c not in river_cols:
+                    base = "▫️"
 
-            # Overlay unit/tower emoji if present
-            if tile is not None:
+            # ---- overlay unit/tower ----
+            if tile is not None and isinstance(tile, dict):
                 base = tile_to_emoji(tile)
                 owner = tile.get("owner")
                 if owner is not None:
@@ -250,25 +269,30 @@ def render_arena_emoji(arena: Arena, match: Optional[object] = None) -> str:
 
             row_tiles.append(base)
 
-        lines.append("".join(row_tiles))
+        lines.append(row_label + "".join(row_tiles))
 
     # Bottom border
-    lines.append(border)
+    lines.append("   " + "🟦" * arena.width)
 
-    # 4. Tower HP summary
+    # ---------------------------------------------------------
+    # Tower HP summary
+    # ---------------------------------------------------------
     tower_hp_lines = collect_tower_hp_lines(arena)
     if tower_hp_lines:
-        lines.append("")  # blank line
+        lines.append("")
         lines.extend(tower_hp_lines)
 
-    # 5. Elixir bars (if we received a match)
+    # ---------------------------------------------------------
+    # Elixir bars
+    # ---------------------------------------------------------
     if match is not None:
         elixir_lines = collect_elixir_lines(match)
         if elixir_lines:
-            lines.append("")  # blank line
+            lines.append("")
             lines.extend(elixir_lines)
 
     return "\n".join(lines)
+
 
 
 # ---------------------------------------------------------

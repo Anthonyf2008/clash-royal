@@ -81,7 +81,7 @@ def setup_match_cmds(bot: commands.Bot):
 
         # ✅ Place unit
         if not match.place_unit_for_player(player.user.id, row, col, unit):
-            await ctx.send("❌ Invalid placement (out of bounds or occupied).")
+            await ctx.send("❌ Invalid placement (wrong side / river / tower / occupied / out of bounds).")
             return
 
         card.apply_cost(player)
