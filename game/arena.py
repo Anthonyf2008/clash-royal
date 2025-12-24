@@ -5,6 +5,7 @@ from typing import Optional, Literal, Iterator, Tuple, Dict, Any
 # ---------------------------------------------------------
 # Arena card pools
 # ---------------------------------------------------------
+
 ARENAS: Dict[int, Dict[str, Any]] = {
     1: {
         "name": "Training Camp 🏕️",

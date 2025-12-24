@@ -3,12 +3,13 @@
 from __future__ import annotations
 from game.storage import players
 from game.visuals import render_arena_emoji
-import random
 from discord.ext import commands
 from game.player import get_player
 from game.match import Match, process_ai_turn, end_match
 from game.arena import ARENAS
 from game.card import Card, cards
+from game.coords import coord_to_rc, rc_to_coord
+
 
 
 # ✅ Only ONE match registry
@@ -49,7 +50,7 @@ def setup_match_cmds(bot: commands.Bot):
     # PLAY A CARD
     # ---------------------------------------------------------
     @bot.command()
-    async def cr_play(ctx, card_name: str, row: int, col: int):
+    async def cr_play(ctx, card_name: str, pos: str):
         match = matches.get(ctx.channel.id)
         if not match or not match.active:
             await ctx.send("❌ No active match.")
@@ -60,7 +61,13 @@ def setup_match_cmds(bot: commands.Bot):
             await ctx.send("⏳ Not your turn.")
             return
 
-        # ✅ Removed old is_disabled() logic
+        # ✅ Parse coordinate like "C4"
+        parsed = coord_to_rc(pos)
+        if not parsed:
+            await ctx.send("❌ Invalid position. Use format like C4 or J13.")
+            return
+
+        row, col = parsed
 
         if card_name not in player.deck:
             await ctx.send("❌ Card not in your deck.")
@@ -76,25 +83,21 @@ def setup_match_cmds(bot: commands.Bot):
             await ctx.send("❌ Can't play this card (energy or cooldown).")
             return
 
-        # ✅ Create unit using new system
         unit = card.create_unit(player.user.id)
 
-        # ✅ Place unit
         if not match.place_unit_for_player(player.user.id, row, col, unit):
-            await ctx.send("❌ Invalid placement (wrong side / river / tower / occupied / out of bounds).")
+            await ctx.send("❌ Invalid placement.")
             return
 
         card.apply_cost(player)
         player.add_cooldown(card.name)
 
         await ctx.send(
-            f"🎮 {player.user.mention} played **{card.name}** at ({row}, {col})"
+            f"🎮 {player.user.mention} played **{card.name}** at {rc_to_coord(row, col)}"
         )
 
-        # ✅ Show updated grid
-        await ctx.send(render_arena_emoji(match.arena))
+        await ctx.send(render_arena_emoji(match.arena, match))
 
-        # ✅ Check win
         winner = match.check_win()
         if winner:
             await end_match(ctx, match, winner, match.opponent())
@@ -104,24 +107,6 @@ def setup_match_cmds(bot: commands.Bot):
 
         if match.current_player().is_ai:
             await process_ai_turn(ctx, match)
-
-    # ---------------------------------------------------------
-    # MATCH STATUS
-    # ---------------------------------------------------------
-    @bot.command()
-    async def cr_status(ctx):
-        match = matches.get(ctx.channel.id)
-        if not match or not match.active:
-            await ctx.send("No active match.")
-            return
-
-        p1, p2 = match.players
-
-        await ctx.send(
-            f"⚔️ Match Status:\n"
-            f"{p1.user.display_name}: {p1.energy} Energy\n"
-            f"{p2.user.display_name}: {p2.energy} Energy"
-        )
 
     # ---------------------------------------------------------
     # LEADERBOARD

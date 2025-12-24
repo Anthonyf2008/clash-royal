@@ -6,7 +6,7 @@ from game.arena import Arena
 from game.player import Player
 from game.card import Card, cards
 from game.visuals import render_arena_emoji
-
+from game.coords import coord_to_rc, rc_to_coord
 
 # =========================================================
 # MATCH CLASS (FINAL, CLEAN, FULLY FUNCTIONAL)
@@ -252,29 +252,20 @@ async def process_ai_turn(ctx, match):
         return
 
     ai = match.current_player()
+    owner_id = ai.user.id
 
-    # 50% chance to play a card
-    if random.random() >= 0.50:
+    # ---------- small helper to finish the turn ----------
+    async def finish_turn():
         match.step_turn()
-        await ctx.send(render_arena_emoji(match.arena))
+        await ctx.send(render_arena_emoji(match.arena, match))
         winner = match.check_win()
         if winner:
             await end_match(ctx, match, winner, match.opponent())
-            return
+            return True
         match.next_turn()
-        return
+        return False
 
-    if not ai.deck:
-        match.step_turn()
-        await ctx.send(render_arena_emoji(match.arena))
-        winner = match.check_win()
-        if winner:
-            await end_match(ctx, match, winner, match.opponent())
-            return
-        match.next_turn()
-        return
-
-    # Pick a random playable card (energy + cooldown)
+    # ---------- gather playable cards ----------
     playable = []
     for name in ai.deck:
         data = cards.get(name)
@@ -285,75 +276,61 @@ async def process_ai_turn(ctx, match):
             playable.append(c)
 
     if not playable:
-        await ctx.send("🤖 **ClashAI** has no playable cards and skips.")
-        match.step_turn()
-        await ctx.send(render_arena_emoji(match.arena))
-        winner = match.check_win()
-        if winner:
-            await end_match(ctx, match, winner, match.opponent())
-            return
-        match.next_turn()
+        await ctx.send("🤖 **ClashAI** has no playable cards (elixir/cooldown) and skips.")
+        await finish_turn()
         return
 
     card = random.choice(playable)
-    owner_id = ai.user.id
 
-    # -------------------------
-    # HORIZONTAL placement rules
-    # -------------------------
-    # River columns (2 middle columns)
-    river_cols = getattr(match.arena, "river_cols", [match.arena.width // 2 - 1, match.arena.width // 2])
+    # ---------- HORIZONTAL placement rules ----------
+    arena = match.arena
+
+    # River columns (2 middle cols)
+    river_cols = getattr(arena, "river_cols", [arena.width // 2 - 1, arena.width // 2])
     left_river = min(river_cols)
     right_river = max(river_cols)
 
-    # AI side deploy columns (stay away from river by 1 tile)
-    if owner_id == match.arena.p1_id:
-        # left player deploys on left side
+    # AI deploy zone: stay 1 tile away from river
+    if owner_id == arena.p1_id:
         possible_cols = list(range(0, max(0, left_river - 1)))
     else:
-        # right player deploys on right side
-        possible_cols = list(range(min(match.arena.width - 1, right_river + 1), match.arena.width))
+        possible_cols = list(range(min(arena.width - 1, right_river + 1), arena.width))
 
-    # Any row is allowed (you can restrict later if you want lanes)
-    possible_rows = list(range(0, match.arena.height))
+    possible_rows = list(range(0, arena.height))
 
+    # ---------- try to place ----------
     placed = False
-    attempts = 0
-
-    while not placed and attempts < 50:
-        attempts += 1
+    for _ in range(60):
         r = random.choice(possible_rows)
         c = random.choice(possible_cols)
 
-        # quick rejects
+        # reject river
         if c in river_cols:
             continue
-        if match.arena.get(r, c) is not None:
+
+        # reject occupied
+        if arena.get(r, c) is not None:
             continue
 
         unit = card.create_unit(owner_id)
         if match.place_unit_for_player(owner_id, r, c, unit):
             card.apply_cost(ai)
             ai.add_cooldown(card.name)
-            await ctx.send(f"🤖 **ClashAI** played **{card.name}** at ({r}, {c})")
+
+            # Prefer C4 style if available
+            try:
+                pos_txt = rc_to_coord(r, c)
+            except Exception:
+                pos_txt = f"({r}, {c})"
+
+            await ctx.send(f"🤖 **ClashAI** played **{card.name}** at **{pos_txt}**")
             placed = True
+            break
 
     if not placed:
         await ctx.send("🤖 **ClashAI** couldn't find a valid tile and skips.")
 
-    # Resolve movement + combat + towers
-    match.step_turn()
+    await finish_turn()
 
-    # Show updated grid
-    await ctx.send(render_arena_emoji(match.arena))
-
-    # Check win
-    winner = match.check_win()
-    if winner:
-        await end_match(ctx, match, winner, match.opponent())
-        return
-
-    # Pass turn
-    match.next_turn()
 
 

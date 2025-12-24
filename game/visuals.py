@@ -43,11 +43,11 @@ def tile_to_emoji(tile: Optional[dict]) -> str:
         return "⬜"
 
     if isinstance(tile, dict):
-        # Terrain-only tiles (from animation frames, etc.)
+        # Terrain-only tiles (spell animation frames, etc.)
         if "type" not in tile and "emoji" in tile:
             return tile["emoji"]
 
-        # Tower tiles
+        # Towers
         if tile.get("type") == "tower":
             if tile.get("name") == "king":
                 return tile.get("emoji", "👑")
@@ -57,6 +57,7 @@ def tile_to_emoji(tile: Optional[dict]) -> str:
         return tile.get("emoji", "❓")
 
     return "❓"
+
 
 
     if isinstance(tile, dict):
@@ -203,101 +204,100 @@ def outline_tile(base: str, owner_id: int, arena: Arena) -> str:
 
 def render_arena_emoji(arena: Arena, match: Optional[object] = None) -> str:
     """
-    Horizontal Clash Royale board WITH COORDINATES:
-    - Columns labeled 1–16 on top
-    - Rows labeled A–L on the left
-    - P1 = left side (🟩), P2 = right side (🟪)
-    - River = middle columns (🟦) with bridges at C & J (🟫)
+    Horizontal Clash Royale style (Discord-aligned):
+    - P1 = left side, P2 = right side
+    - River is 2 columns wide in the middle
+    - Bridges cross BOTH river columns (2 wide, 3 tall) at 1/4 and 3/4 height
+    - Column header is always 1..16
     """
 
-    # ---------------------------------------------------------
-    # Clear old tower tiles (avoid duplication)
-    # ---------------------------------------------------------
+    LEFT_PAD = "   "  # must match your row label width
+
+    # Keycap digits look like your screenshot (boxed)
+    DIGIT_BOX = {
+        "0": "0️⃣", "1": "1️⃣", "2": "2️⃣", "3": "3️⃣", "4": "4️⃣",
+        "5": "5️⃣", "6": "6️⃣", "7": "7️⃣", "8": "8️⃣", "9": "9️⃣",
+    }
+
+    def col_header() -> str:
+        # 1..9 then 0 then 1.. (wrap every 10)
+        digits = [str((i + 1) % 10) for i in range(arena.width)]
+        return LEFT_PAD + "".join(DIGIT_BOX[d] for d in digits)
+
+    def row_prefix(r: int) -> str:
+        # exactly 3 chars: "A␠␠"
+        return f"{chr(ord('A') + r)}  "
+
+    # --- Clear old tower tiles so we don't duplicate ---
     for r in range(arena.height):
         for c in range(arena.width):
             tile = arena.get(r, c)
             if isinstance(tile, dict) and tile.get("type") == "tower":
                 arena.set(r, c, None)
 
+    # --- Inject towers freshly ---
     arena.place_towers_on_grid()
 
     lines: list[str] = []
 
-    river_cols = getattr(arena, "river_cols", [arena.width // 2 - 1, arena.width // 2])
-    bridge_rows = getattr(arena, "bridge_rows", [2, 9])  # C and J
+    # --- Layout constants ---
+    river_cols = [arena.width // 2 - 1, arena.width // 2]  # 2-wide river
 
-    # ---------------------------------------------------------
-    # Column header (1–16)
-    # ---------------------------------------------------------
-    header = "   "  # space for row labels
-    for i in range(arena.width):
-        header += f"{(i+1)%10}"  # keeps spacing clean in Discord
-    lines.append(header)
+    bridge_centers = [arena.height // 4, arena.height - arena.height // 4 - 1]
+    bridge_rows = set()
+    for br in bridge_centers:
+        for rr in (br - 1, br, br + 1):
+            if 0 <= rr < arena.height:
+                bridge_rows.add(rr)
 
-    # Top border
-    lines.append("   " + "🟦" * arena.width)
+    # --- Header + border ---
+    lines.append(col_header())
+    border = LEFT_PAD + ("🟦" * arena.width)
+    lines.append(border)
 
-    # ---------------------------------------------------------
-    # Grid rows
-    # ---------------------------------------------------------
+    # --- Grid rows ---
     for r in range(arena.height):
-        row_label = chr(ord("A") + r) + "  "  # A–L
         row_tiles: list[str] = []
 
         for c in range(arena.width):
             tile = arena.get(r, c)
 
-            # ---- base terrain ----
+            # Base terrain
             if c in river_cols:
-                base = "🟫" if r in bridge_rows else "🟦"
+                base = "🟦"  # water
             else:
                 base = "🟩" if c < river_cols[0] else "🟪"
 
-            # Optional lane markers
-            if tile is None:
-                lane_top = arena.height // 3
-                lane_bot = arena.height - arena.height // 3 - 1
-                if r in (lane_top, lane_bot) and c not in river_cols:
-                    base = "▫️"
+            # Bridge override (2 wide river, 3 tall at bridge rows)
+            if (r in bridge_rows) and (c in river_cols):
+                base = "🟫"
 
-            # ---- overlay unit/tower ----
-            if tile is not None and isinstance(tile, dict):
+            # Overlay unit/tower if present
+            if tile is not None:
                 base = tile_to_emoji(tile)
-                owner = tile.get("owner")
-                if owner is not None:
-                    base = outline_tile(base, owner, arena)
 
             row_tiles.append(base)
 
-        lines.append(row_label + "".join(row_tiles))
+        lines.append(row_prefix(r) + "".join(row_tiles))
 
-    # Bottom border
-    lines.append("   " + "🟦" * arena.width)
+    # --- Bottom border ---
+    lines.append(border)
 
-    # ---------------------------------------------------------
-    # Tower HP summary
-    # ---------------------------------------------------------
+    # --- Tower HP summary ---
     tower_hp_lines = collect_tower_hp_lines(arena)
     if tower_hp_lines:
         lines.append("")
         lines.extend(tower_hp_lines)
 
-    # ---------------------------------------------------------
-    # Elixir bars
-    # ---------------------------------------------------------
+    # --- Elixir bars ---
     if match is not None:
         elixir_lines = collect_elixir_lines(match)
         if elixir_lines:
             lines.append("")
             lines.extend(elixir_lines)
 
-    return "\n".join(lines)
+    return "```text\n" + "\n".join(lines) + "\n```"
 
-
-
-# ---------------------------------------------------------
-# ASCII GRID (debug)
-# ---------------------------------------------------------
 
 def render_arena_ascii(arena: Arena) -> str:
     lines: list[str] = []
