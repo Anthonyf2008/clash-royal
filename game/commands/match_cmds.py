@@ -77,19 +77,16 @@ def setup_match_cmds(bot: commands.Bot):
         if not parsed:
             await ctx.send("❌ Invalid position. Use format like C4.")
             return
-
         row, col = parsed
 
         if card_name not in player.deck:
             await ctx.send("❌ Card not in your deck.")
             return
-
         if card_name not in cards:
             await ctx.send("❌ Unknown card.")
             return
 
         card = Card(card_name, cards[card_name])
-
         if not card.can_play(player):
             await ctx.send("❌ Can't play this card (elixir/cooldown).")
             return
@@ -97,12 +94,24 @@ def setup_match_cmds(bot: commands.Bot):
         unit = card.create_unit(player.user.id)
 
         async with match.lock:
-            if not match.place_unit_for_player(player.user.id, row, col, unit):
-                await ctx.send("❌ Invalid placement.")
-                return
+            # placement rules (your-side + not river)
+            if hasattr(match, "is_valid_deploy") and not match.is_valid_deploy(player.user.id, row, col):
+                ok = False
+                reason = "❌ You can only deploy on your side (not on river/bridge)."
+            else:
+                ok = match.place_unit_for_player(player.user.id, row, col, unit)
+                reason = "❌ Invalid placement (occupied or out of bounds)."
 
-            card.apply_cost(player)
-            player.add_cooldown(card.name)
+            if not ok:
+                # don't spend elixir
+                pass
+            else:
+                card.apply_cost(player)
+                player.add_cooldown(card.name)
+
+        if not ok:
+            await ctx.send(reason)
+            return
 
         await ctx.send(f"🎮 {ctx.author.mention} played **{card.name}** at {rc_to_coord(row, col)}")
         await ctx.send(render_arena_emoji(match.arena, match))

@@ -9,6 +9,26 @@ from game.visuals import render_arena_emoji
 from game.coords import coord_to_rc, rc_to_coord
 import asyncio
 import time
+import asyncio
+import time
+from game.visuals import render_arena_emoji
+
+def is_valid_deploy(self, owner_id: int, row: int, col: int) -> bool:
+    # block river (2 cols)
+    river_cols = getattr(self.arena, "river_cols", [self.arena.width // 2 - 1, self.arena.width // 2])
+    if col in river_cols:
+        return False
+
+    # deploy must be on your side (horizontal)
+    left_river = min(river_cols)
+    right_river = max(river_cols)
+
+    if owner_id == self.arena.p1_id:
+        # left player
+        return col < left_river
+    else:
+        # right player
+        return col > right_river
 
 async def elixir_loop(ctx, match):
     while match.active:
@@ -180,41 +200,90 @@ class Match:
     # -----------------------------------------------------
 
     def tower_attacks(self) -> None:
-        if not self.arena.towers:
+        if not getattr(self.arena, "towers", None):
             return
 
         for owner_id, tower_set in self.arena.towers.items():
+            if not isinstance(tower_set, dict):
+                continue
+
             for name, t in tower_set.items():
-                if t.get("hp", 0) <= 0:
-                    continue
-                if name == "king" and not t.get("active", False):
+                if not isinstance(t, dict):
                     continue
 
-                # ✅ NEW: towers use "cells": [(r,c), ...]
-                cells = t.get("cells") or []
-                if not cells:
+                hp = int(t.get("hp", 0) or 0)
+                if hp <= 0:
                     continue
 
-                # Use the first cell as the firing origin
-                tr, tc = cells[0]
+                # King only shoots when active
+                if name == "king" and not bool(t.get("active", False)):
+                    continue
 
+                cells = t.get("cells")
+                if not isinstance(cells, list) or not cells:
+                    continue
+
+                # Damage + range
                 dmg = 120 if name == "king" else 90
                 rng = 7 if name == "king" else 6
 
-                target_pos = self.find_nearest_enemy(owner_id, tr, tc, rng)
-                if not target_pos:
+                # Find target using the BEST origin cell (closest cell to the enemy)
+                best_origin = None
+                best_target = None
+                best_total_dist = 10 ** 9
+
+                # Small optimization: pre-scan enemy units once
+                enemies: list[tuple[int, int]] = []
+                for r in range(self.arena.height):
+                    for c in range(self.arena.width):
+                        tile = self.arena.get(r, c)
+                        if not isinstance(tile, dict):
+                            continue
+                        if tile.get("type") == "tower":
+                            continue
+                        if tile.get("owner") == owner_id:
+                            continue
+                        enemies.append((r, c))
+
+                if not enemies:
                     continue
 
-                r, c = target_pos
+                # For each tower cell, find nearest enemy in range
+                for (tr, tc) in cells:
+                    if not self.arena.in_bounds(tr, tc):
+                        continue
+
+                    # nearest enemy from this origin
+                    local_best = None
+                    local_dist = 10 ** 9
+                    for (er, ec) in enemies:
+                        dist = abs(er - tr) + abs(ec - tc)
+                        if dist <= rng and dist < local_dist:
+                            local_dist = dist
+                            local_best = (er, ec)
+
+                    if local_best is None:
+                        continue
+
+                    # choose the origin+target combo with the smallest distance
+                    if local_dist < best_total_dist:
+                        best_total_dist = local_dist
+                        best_origin = (tr, tc)
+                        best_target = local_best
+
+                if best_target is None:
+                    continue
+
+                r, c = best_target
                 target = self.arena.get(r, c)
-                if not target or not isinstance(target, dict):
+                if not isinstance(target, dict):
                     continue
 
-                # Don't let towers shoot towers (optional safety)
+                # Optional: don't shoot towers
                 if target.get("type") == "tower":
                     continue
 
-                target["hp"] -= dmg
+                target["hp"] = int(target.get("hp", 0) or 0) - dmg
                 if target["hp"] <= 0:
                     self.arena.set(r, c, None)
 
@@ -289,9 +358,16 @@ async def end_match(channel, match, winner, loser):
     await channel.send(f"🏆 **{winner.user.display_name} wins the match!**")
 
 
-TICK_SECONDS = 0.25        # simulation tick rate
-RENDER_EVERY = 1.0         # send board update at most once per second
-ELIXIR_EVERY = 1.0         # +1 elixir every second (change later to 2.8 if you want)
+async def end_match_channel(channel, match, winner, loser):
+    if not match.active:
+        return
+    match.active = False
+    await channel.send(f"🏆 **{winner.user.display_name} wins the match!**")
+
+# tune these
+TICK_SECONDS = 0.25      # simulation tick rate (4 ticks/sec)
+ELIXIR_EVERY = 1.0       # +1 elixir per second
+RENDER_EVERY = 1.5       # send board every 1.5s (prevents spam)
 
 async def realtime_loop(bot, channel_id: int, match):
     """
@@ -311,24 +387,25 @@ async def realtime_loop(bot, channel_id: int, match):
         while match.active:
             now = time.monotonic()
 
-            # Elixir + cooldowns
-            if now - last_elixir >= ELIXIR_EVERY:
-                last_elixir = now
-                for p in match.players:
-                    p.regen_energy()
-                    p.tick_cooldowns()
-
-            # Step simulation safely
             async with match.lock:
+                # 🔮 Elixir + cooldowns (locked so cr_play can't race it)
+                if now - last_elixir >= ELIXIR_EVERY:
+                    last_elixir = now
+                    for p in match.players:
+                        p.regen_energy()
+                        p.tick_cooldowns()
+
+                # 🧠 step simulation
                 match.step_turn()
 
+                # 🏆 win check
                 winner = match.check_win()
                 if winner:
                     loser = match.get_player_by_id(match.opponent_id(winner.user.id)) or match.opponent()
-                    await end_match(channel, match, winner, loser)  # we’ll patch end_match below
+                    await end_match_channel(channel, match, winner, loser)
                     return
 
-            # Render throttled
+            # 🖼 Render throttled (no lock needed; render reads arena state)
             if now - last_render >= RENDER_EVERY:
                 last_render = now
                 await channel.send(render_arena_emoji(match.arena, match))
@@ -337,6 +414,7 @@ async def realtime_loop(bot, channel_id: int, match):
 
     except asyncio.CancelledError:
         return
+
 
 # =========================================================
 # AI TURN LOGIC
