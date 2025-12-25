@@ -7,6 +7,20 @@ from game.player import Player
 from game.card import Card, cards
 from game.visuals import render_arena_emoji
 from game.coords import coord_to_rc, rc_to_coord
+import asyncio
+import time
+
+async def elixir_loop(ctx, match):
+    while match.active:
+        for p in match.players:
+            p.regen_energy()
+            p.tick_cooldowns()
+
+        # (optional) if you want: show elixir sometimes, not every second
+        # await ctx.send(render_arena_emoji(match.arena, match))
+
+        await asyncio.sleep(1)
+
 
 # =========================================================
 # MATCH CLASS (FINAL, CLEAN, FULLY FUNCTIONAL)
@@ -14,12 +28,15 @@ from game.coords import coord_to_rc, rc_to_coord
 
 class Match:
     def __init__(self, p1: Player, p2: Player):
-        self.players: List[Player] = [p1, p2]
-        self.active: bool = True
-        self.turn_index: int = 0  # 0 = p1, 1 = p2
+        self.players = [p1, p2]
+        self.active = True
+        self.turn_index = 0  # you can delete later
 
-        # Arena knows the two player IDs for tower ownership
         self.arena = Arena(width=16, height=10, p1_id=p1.user.id, p2_id=p2.user.id)
+        import asyncio
+        self.lock = asyncio.Lock()
+        self.loop_task = None
+
 
     # -----------------------------------------------------
     # BASIC HELPERS
@@ -168,28 +185,47 @@ class Match:
 
         for owner_id, tower_set in self.arena.towers.items():
             for name, t in tower_set.items():
-                if t["hp"] <= 0:
+                if t.get("hp", 0) <= 0:
                     continue
-                if name == "king" and not t["active"]:
+                if name == "king" and not t.get("active", False):
                     continue
+
+                # ✅ NEW: towers use "cells": [(r,c), ...]
+                cells = t.get("cells") or []
+                if not cells:
+                    continue
+
+                # Use the first cell as the firing origin
+                tr, tc = cells[0]
 
                 dmg = 120 if name == "king" else 90
                 rng = 7 if name == "king" else 6
 
-                target_pos = self.find_nearest_enemy(owner_id, t["row"], t["col"], rng)
+                target_pos = self.find_nearest_enemy(owner_id, tr, tc, rng)
                 if not target_pos:
                     continue
 
-                tr, tc = target_pos
-                target = self.arena.get(tr, tc)
-                if not target:
+                r, c = target_pos
+                target = self.arena.get(r, c)
+                if not target or not isinstance(target, dict):
+                    continue
+
+                # Don't let towers shoot towers (optional safety)
+                if target.get("type") == "tower":
                     continue
 
                 target["hp"] -= dmg
                 if target["hp"] <= 0:
-                    self.arena.set(tr, tc, None)
+                    self.arena.set(r, c, None)
 
-    def find_nearest_enemy(self, owner_id: int, row: int, col: int, max_range: int) -> Optional[Tuple[int, int]]:
+    def find_nearest_enemy_in_range(
+            self,
+            owner_id: int,
+            row: int,
+            col: int,
+            max_range: int,
+            include_towers: bool = False
+    ):
         best = None
         best_dist = 999
 
@@ -198,9 +234,13 @@ class Match:
                 tile = self.arena.get(r, c)
                 if not isinstance(tile, dict):
                     continue
-                if tile.get("type") == "tower":
-                    continue
+
+                # Skip friendly
                 if tile.get("owner") == owner_id:
+                    continue
+
+                # Skip towers unless allowed
+                if tile.get("type") == "tower" and not include_towers:
                     continue
 
                 dist = abs(r - row) + abs(c - col)
@@ -235,13 +275,68 @@ class Match:
 # END MATCH
 # =========================================================
 
-async def end_match(ctx, match, winner, loser):
+async def end_match(channel, match, winner, loser):
     if not match.active:
         return
 
     match.active = False
-    await ctx.send(f"🏆 **{winner.user.display_name} wins the match!**")
 
+    # stop realtime loop
+    task = getattr(match, "loop_task", None)
+    if task:
+        task.cancel()
+
+    await channel.send(f"🏆 **{winner.user.display_name} wins the match!**")
+
+
+TICK_SECONDS = 0.25        # simulation tick rate
+RENDER_EVERY = 1.0         # send board update at most once per second
+ELIXIR_EVERY = 1.0         # +1 elixir every second (change later to 2.8 if you want)
+
+async def realtime_loop(bot, channel_id: int, match):
+    """
+    Real-time loop:
+    - steps the simulation on a fixed tick
+    - regenerates elixir on a timer
+    - renders occasionally (not every tick)
+    """
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        return
+
+    last_render = 0.0
+    last_elixir = 0.0
+
+    try:
+        while match.active:
+            now = time.monotonic()
+
+            # Elixir + cooldowns
+            if now - last_elixir >= ELIXIR_EVERY:
+                last_elixir = now
+                for p in match.players:
+                    p.regen_energy()
+                    p.tick_cooldowns()
+
+            # Step simulation safely
+            async with match.lock:
+                match.step_turn()
+
+                winner = match.check_win()
+                if winner:
+                    loser = match.get_player_by_id(match.opponent_id(winner.user.id)) or match.opponent()
+                    await end_match(channel, match, winner, loser)  # we’ll patch end_match below
+                    return
+
+            # Render throttled
+            if now - last_render >= RENDER_EVERY:
+                last_render = now
+                await channel.send(render_arena_emoji(match.arena, match))
+
+            await asyncio.sleep(TICK_SECONDS)
+
+    except asyncio.CancelledError:
+        return
 
 # =========================================================
 # AI TURN LOGIC

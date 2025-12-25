@@ -1,14 +1,19 @@
 # game/commands/match_cmds.py
 
 from __future__ import annotations
+
+import asyncio
+from discord.ext import commands
+
 from game.storage import players
 from game.visuals import render_arena_emoji
-from discord.ext import commands
 from game.player import get_player
-from game.match import Match, process_ai_turn, end_match
+from game.match import Match, end_match, realtime_loop
 from game.arena import ARENAS
 from game.card import Card, cards
 from game.coords import coord_to_rc, rc_to_coord
+
+
 
 
 
@@ -21,30 +26,37 @@ def setup_match_cmds(bot: commands.Bot):
     # ---------------------------------------------------------
     @bot.command()
     async def cr_start_ai(ctx):
-        if ctx.channel.id in matches:
+        if ctx.channel.id in matches and matches[ctx.channel.id].active:
             await ctx.send("⚠️ A match already exists in this channel.")
             return
 
+        # Create human player
         human = get_player(ctx.author, players)
 
-        # Fake AI user
+        # Create fake AI user + player
         ai_user = type("AIUser", (), {})()
         ai_user.id = 999999999999
         ai_user.display_name = "ClashAI"
+
         ai_player = get_player(ai_user, players)
-
-        # 🔥 THIS LINE IS REQUIRED
         ai_player.is_ai = True
-
         ai_player.cards = ARENAS[1]["cards"]
         ai_player.deck = ai_player.cards[:5]
+
+        # Create match ONCE
         match = Match(human, ai_player)
         matches[ctx.channel.id] = match
 
+        # Start realtime loop
+        match.loop_task = asyncio.create_task(realtime_loop(bot, ctx.channel.id, match))
+
         await ctx.send(
-            f"🤖 {ctx.author.mention} started a match against {ai_player.user.display_name}!\n"
-            f"Your turn first. Play a card with `!cr_play <card> <row> <col>`."
+            f"🤖 {ctx.author.mention} started a real-time match vs **{ai_player.user.display_name}**!\n"
+            f"Play anytime with `!cr_play <card> <pos>` (example: `!cr_play knight C4`)."
         )
+
+        # Show initial arena
+        await ctx.send(render_arena_emoji(match.arena, match))
 
     # ---------------------------------------------------------
     # PLAY A CARD
@@ -56,15 +68,14 @@ def setup_match_cmds(bot: commands.Bot):
             await ctx.send("❌ No active match.")
             return
 
-        player = match.current_player()
-        if ctx.author.id != player.user.id:
-            await ctx.send("⏳ Not your turn.")
+        player = match.get_player_by_id(ctx.author.id)
+        if not player:
+            await ctx.send("❌ You are not in this match.")
             return
 
-        # ✅ Parse coordinate like "C4"
         parsed = coord_to_rc(pos)
         if not parsed:
-            await ctx.send("❌ Invalid position. Use format like C4 or J13.")
+            await ctx.send("❌ Invalid position. Use format like C4.")
             return
 
         row, col = parsed
@@ -80,33 +91,21 @@ def setup_match_cmds(bot: commands.Bot):
         card = Card(card_name, cards[card_name])
 
         if not card.can_play(player):
-            await ctx.send("❌ Can't play this card (energy or cooldown).")
+            await ctx.send("❌ Can't play this card (elixir/cooldown).")
             return
 
         unit = card.create_unit(player.user.id)
 
-        if not match.place_unit_for_player(player.user.id, row, col, unit):
-            await ctx.send("❌ Invalid placement.")
-            return
+        async with match.lock:
+            if not match.place_unit_for_player(player.user.id, row, col, unit):
+                await ctx.send("❌ Invalid placement.")
+                return
 
-        card.apply_cost(player)
-        player.add_cooldown(card.name)
+            card.apply_cost(player)
+            player.add_cooldown(card.name)
 
-        await ctx.send(
-            f"🎮 {player.user.mention} played **{card.name}** at {rc_to_coord(row, col)}"
-        )
-
+        await ctx.send(f"🎮 {ctx.author.mention} played **{card.name}** at {rc_to_coord(row, col)}")
         await ctx.send(render_arena_emoji(match.arena, match))
-
-        winner = match.check_win()
-        if winner:
-            await end_match(ctx, match, winner, match.opponent())
-            return
-
-        match.next_turn()
-
-        if match.current_player().is_ai:
-            await process_ai_turn(ctx, match)
 
     # ---------------------------------------------------------
     # LEADERBOARD

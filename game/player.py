@@ -1,3 +1,5 @@
+from game.arena import ARENAS
+
 class Player:
     """
     Represents a player in the grid-based Clash Royale-style game.
@@ -72,20 +74,22 @@ class Player:
 # PLAYER REGISTRY
 # ---------------------------------------------------------
 
+
 def get_player(user, players):
     """
     Retrieve or create a Player object for a Discord user.
     """
     if user.id not in players:
-        starter = [
-            "knight", "archer", "giant", "fireball",
-            "valkyrie", "musketeer", "mini_pekka", "baby_dragon"
-        ]
+        # Starter cards = Arena 1 unlocks
+        starter = ARENAS[1]["cards"].copy()
+
         p = Player(user, starter)
-        p.deck = starter.copy()
+        p.deck = starter[:5]  # ✅ start with 5 cards (Clash-style)
+
         players[user.id] = p
 
     return players[user.id]
+
 
 
 

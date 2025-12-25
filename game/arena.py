@@ -1,6 +1,8 @@
 # game/arena.py
 from __future__ import annotations
 from typing import Optional, Literal, Iterator, Tuple, Dict, Any
+from game.card import CORE_CARD_NAMES
+
 
 # ---------------------------------------------------------
 # Arena card pools
@@ -10,37 +12,14 @@ ARENAS: Dict[int, Dict[str, Any]] = {
     1: {
         "name": "Training Camp 🏕️",
         "unlock_trophies": 0,
-        "cards": [
-            "knight", "archer", "giant", "fireball",
-            "valkyrie", "musketeer", "mini_pekka", "baby_dragon",
-            "skeletons", "bomber", "witch", "prince",
-            "dark_prince", "hunter", "ice_spirit",
-            "barbarians", "cannon", "wizard",
-            "minions", "mega_minion", "golem", "rage", "tornado",
-            "furnace", "guards", "hog_rider",
-            "inferno_tower", "freeze", "poison",
-            "lava_hound", "miner", "sparky", "electro_wizard",
-            "royal_giant", "three_musketeers",
-        ],
+        "cards": CORE_CARD_NAMES,
     }
 }
+
 
 Direction = Literal["up", "down", "left", "right"]
 
 class Arena:
-    """
-    Horizontal arena (left vs right).
-
-    Grid is 12x16 to match A-L and 1-16.
-
-    River is 2 columns wide in the middle:
-      cols 8 and 9 (1-indexed) -> col indexes 7 and 8 (0-indexed)
-
-    Bridges at:
-      row C and row J (1-indexed letters) -> indexes 2 and 9
-      and on both river columns.
-    """
-
     def __init__(self, width: int = 16, height: int = 12,
                  p1_id: int | None = None, p2_id: int | None = None) -> None:
         self.width = width
@@ -53,29 +32,35 @@ class Arena:
         self.p1_id = p1_id
         self.p2_id = p2_id
 
-        # Tower layout (YOUR coordinates):
-        # Princess towers at: C4, J4, C13, J13
-        # Kings are 2x1 at: F2+G2 and F15+G15
+        # River is 2 columns wide in the middle (0-indexed)
+        # width=16 => river cols = [7, 8] (these are columns 8 and 9 in 1-indexed)
+        self.river_cols = [self.width // 2 - 1, self.width // 2]
+
+        # Towers use ONE consistent format everywhere: {"hp":..., "cells":[(r,c),...], ...}
+        # Your layout:
+        # Princess towers: C4, J4, C13, J13
+        # King towers (2x1): F2+G2 and F15+G15
         #
-        # Convert to 0-index:
-        # C -> 2, J -> 9, F -> 5, G -> 6
-        # 4 -> col 3, 13 -> col 12, 2 -> col 1, 15 -> col 14
+        # 0-index conversion:
+        # C=2, J=9, F=5, G=6
+        # 4->3, 13->12, 2->1, 15->14
 
         if p1_id is not None and p2_id is not None:
             self.towers: Dict[int, Dict[str, Dict[str, Any]]] = {
                 p1_id: {
-                    "left":  {"hp": 1500, "cells": [(2, 3)],  "emoji": "🏰", "active": True},   # C4
-                    "right": {"hp": 1500, "cells": [(9, 3)],  "emoji": "🏰", "active": True},   # J4
-                    "king":  {"hp": 3000, "cells": [(5, 1), (6, 1)], "emoji": "👑", "active": False},  # F2+G2
+                    "left":  {"hp": 1500, "cells": [(2, 3)],          "emoji": "🏰", "active": True},   # C4
+                    "right": {"hp": 1500, "cells": [(9, 3)],          "emoji": "🏰", "active": True},   # J4
+                    "king":  {"hp": 3000, "cells": [(5, 1), (6, 1)],  "emoji": "👑", "active": False},  # F2+G2
                 },
                 p2_id: {
-                    "left":  {"hp": 1500, "cells": [(2, 12)], "emoji": "🏰", "active": True},   # C13
-                    "right": {"hp": 1500, "cells": [(9, 12)], "emoji": "🏰", "active": True},   # J13
-                    "king":  {"hp": 3000, "cells": [(5, 14), (6, 14)], "emoji": "👑", "active": False},  # F15+G15
+                    "left":  {"hp": 1500, "cells": [(2, 12)],         "emoji": "🏰", "active": True},   # C13
+                    "right": {"hp": 1500, "cells": [(9, 12)],         "emoji": "🏰", "active": True},   # J13
+                    "king":  {"hp": 3000, "cells": [(5, 14), (6, 14)],"emoji": "👑", "active": False},  # F15+G15
                 },
             }
         else:
             self.towers = {}
+
 
     # -----------------------------
     # Grid helpers
