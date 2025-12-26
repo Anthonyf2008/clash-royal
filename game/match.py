@@ -135,62 +135,101 @@ class Match:
     # -----------------------------------------------------
 
     def step_units(self) -> None:
-        new_grid = [[None for _ in range(self.arena.width)] for _ in range(self.arena.height)]
+        old_grid = self.arena.grid
+        h, w = self.arena.height, self.arena.width
 
-        for r in range(self.arena.height):
-            for c in range(self.arena.width):
-                tile = self.arena.grid[r][c]
+        new_grid = [[None for _ in range(w)] for _ in range(h)]
+
+        # 1) Place towers first (they never move)
+        for r in range(h):
+            for c in range(w):
+                tile = old_grid[r][c]
+                if isinstance(tile, dict) and tile.get("type") == "tower":
+                    new_grid[r][c] = tile
+
+        # 2) Move/attack units
+        for r in range(h):
+            for c in range(w):
+                tile = old_grid[r][c]
                 if not isinstance(tile, dict):
                     continue
-
                 if tile.get("type") == "tower":
-                    new_grid[r][c] = tile
                     continue
 
-                owner = tile["owner"]
+                owner = tile.get("owner")
+                if owner is None:
+                    continue
+
                 direction = 1 if owner == self.arena.p1_id else -1  # P1 RIGHT, P2 LEFT
+                nr, nc = r, c + direction
 
-                target_r = r
-                target_c = c + direction
-
-                if not self.arena.in_bounds(target_r, target_c):
-                    new_grid[r][c] = tile
-                    continue
-
-                target_tile = self.arena.get(target_r, target_c)
-
-                if target_tile is None:
-                    if new_grid[target_r][target_c] is None:
-                        new_grid[target_r][target_c] = tile
-                    else:
+                # Out of bounds => stay
+                if not self.arena.in_bounds(nr, nc):
+                    if new_grid[r][c] is None:
                         new_grid[r][c] = tile
                     continue
 
-                if isinstance(target_tile, dict):
-                    if target_tile.get("type") == "tower":
-                        # ✅ do NOT attack friendly towers
-                        if target_tile.get("owner") == owner:
-                            # just stay in place
-                            pass
-                        else:
-                            # enemy tower (or unknown owner treated as enemy)
-                            self.attack_tower(tile, target_tile)
-                    else:
-                        if target_tile.get("owner") != owner:
-                            self.attack_unit(tile, target_r, target_c)
+                # Look in front:
+                # Prefer what's already in new_grid (moved this tick),
+                # otherwise fall back to old_grid.
+                front = new_grid[nr][nc]
+                if front is None:
+                    front = old_grid[nr][nc]
 
+                # If front is empty and destination not already taken => move
+                if front is None:
+                    if new_grid[nr][nc] is None:
+                        new_grid[nr][nc] = tile
+                    else:
+                        # Someone already moved into it this tick => stay
+                        if new_grid[r][c] is None:
+                            new_grid[r][c] = tile
+                    continue
+
+                # If front is a tower => attack tower, stay
+                if isinstance(front, dict) and front.get("type") == "tower":
+                    self.attack_tower(tile, front)
+                    if new_grid[r][c] is None:
+                        new_grid[r][c] = tile
+                    continue
+
+                # If front is a unit
+                if isinstance(front, dict) and front.get("type") != "tower":
+                    if front.get("owner") != owner:
+                        # Attack enemy unit on the current-tick grid.
+                        # If enemy unit was already in new_grid, it gets damaged/removed there.
+                        # If it was only in old_grid, we need to "materialize" it into new_grid first.
+                        if new_grid[nr][nc] is None:
+                            new_grid[nr][nc] = front
+
+                        self.attack_unit(tile, nr, nc, new_grid)
+
+                    # Either way (blocked or attacked), attacker stays
+                    if new_grid[r][c] is None:
+                        new_grid[r][c] = tile
+                    continue
+
+                # Fallback: stay
                 if new_grid[r][c] is None:
                     new_grid[r][c] = tile
 
         self.arena.grid = new_grid
 
-    def attack_unit(self, attacker: dict, r: int, c: int) -> None:
-        target = self.arena.get(r, c)
-        if not target:
+        self.arena.grid = new_grid
+
+    def attack_unit(self, attacker: dict, r: int, c: int, grid: list[list]) -> None:
+        """
+        Attack a unit at (r,c) using the *current tick* grid.
+        """
+        target = grid[r][c]
+        if not isinstance(target, dict):
             return
+        if target.get("type") == "tower":
+            return
+
         target["hp"] -= attacker["damage"]
         if target["hp"] <= 0:
-            self.arena.set(r, c, None)
+            grid[r][c] = None
 
     def attack_tower(self, attacker: dict, tower_tile: dict) -> None:
         owner = tower_tile["owner"]
