@@ -148,7 +148,7 @@ class Match:
                     continue
 
                 owner = tile["owner"]
-                direction = 1 if owner == self.arena.p1_id else -1  # P1 goes RIGHT, P2 goes LEFT
+                direction = 1 if owner == self.arena.p1_id else -1  # P1 RIGHT, P2 LEFT
 
                 target_r = r
                 target_c = c + direction
@@ -168,7 +168,13 @@ class Match:
 
                 if isinstance(target_tile, dict):
                     if target_tile.get("type") == "tower":
-                        self.attack_tower(tile, target_tile)
+                        # ✅ do NOT attack friendly towers
+                        if target_tile.get("owner") == owner:
+                            # just stay in place
+                            pass
+                        else:
+                            # enemy tower (or unknown owner treated as enemy)
+                            self.attack_tower(tile, target_tile)
                     else:
                         if target_tile.get("owner") != owner:
                             self.attack_unit(tile, target_r, target_c)
