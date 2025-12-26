@@ -45,23 +45,6 @@ class Card:
     # Grid-based unit creation
     # ---------------------------------------------------------
 
-    def create_unit(self, owner_id: int) -> dict:
-        """
-        Convert this card into a unit object for the grid.
-        Buildings and troops both use this.
-        Spells do NOT create units (you'll handle spells separately later).
-        """
-        return {
-            "name": self.name,
-            "type": self.type,
-            "owner": owner_id,
-            "hp": self.hp,
-            "damage": self.damage,
-            "range": self.range,
-            "speed": self.speed,
-            "special": self.special,
-            "emoji": self.emoji,
-        }
 
     def __str__(self):
         return f"{self.name} (Cost: {self.cost})"

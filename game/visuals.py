@@ -1,7 +1,7 @@
 # game/visuals.py
-
 from __future__ import annotations
-from typing import Optional, Dict, Any
+
+from typing import Optional, Dict, Any, List, Tuple
 from .arena import Arena
 import os
 from PIL import Image
@@ -35,42 +35,28 @@ def make_deck_image(card_files, output_file="deck.png"):
 
 
 # ---------------------------------------------------------
-# TILE → EMOJI (fixed, no duplication)
+# TILE → EMOJI
 # ---------------------------------------------------------
 
 def tile_to_emoji(tile: Optional[dict]) -> str:
     if tile is None:
         return "⬜"
 
-    if isinstance(tile, dict):
-        # Terrain-only tiles (spell animation frames, etc.)
-        if "type" not in tile and "emoji" in tile:
-            return tile["emoji"]
+    if not isinstance(tile, dict):
+        return "❓"
 
-        # Towers
-        if tile.get("type") == "tower":
-            if tile.get("name") == "king":
-                return tile.get("emoji", "👑")
-            return tile.get("emoji", "🏰")
+    # Terrain-only tiles (spell animation frames, etc.)
+    if "type" not in tile and "emoji" in tile:
+        return tile["emoji"]
 
-        # Units
-        return tile.get("emoji", "❓")
+    # Towers
+    if tile.get("type") == "tower":
+        if tile.get("name") == "king":
+            return tile.get("emoji", "👑")
+        return tile.get("emoji", "🏰")
 
-    return "❓"
-
-
-
-    if isinstance(tile, dict):
-        # Tower tiles
-        if tile.get("type") == "tower":
-            if tile.get("name") == "king":
-                return tile.get("emoji", "👑")
-            return tile.get("emoji", "🏰")
-
-        # Units
-        return tile.get("emoji", "❓")
-
-    return "❓"
+    # Units (or anything else dict-like)
+    return tile.get("emoji", "❓")
 
 
 # ---------------------------------------------------------
@@ -84,10 +70,6 @@ def _hp_ratio(current: int, max_hp: int) -> float:
 
 
 def hp_bar_3(current: int, max_hp: int) -> str:
-    """
-    Tiny 3-segment HP bar for towers.
-    🟩 = high, 🟨 = mid, 🟥 = low, ⬛ = empty
-    """
     ratio = _hp_ratio(current, max_hp)
 
     if ratio == 0:
@@ -100,10 +82,6 @@ def hp_bar_3(current: int, max_hp: int) -> str:
 
 
 def hp_bar_unit(current: int, max_hp: int) -> str:
-    """
-    Smaller 2-segment bar for units (optional).
-    Not drawn on grid, but can be shown in info lines later.
-    """
     ratio = _hp_ratio(current, max_hp)
     if ratio == 0:
         return "⬛⬛"
@@ -119,11 +97,6 @@ def hp_bar_unit(current: int, max_hp: int) -> str:
 # ---------------------------------------------------------
 
 def collect_tower_hp_lines(arena: Arena) -> list[str]:
-    """
-    Returns lines like:
-    P1 L🟩🟩🟩 K🟩🟩🟩 R🟨🟨⬛
-    P2 L🟩🟩🟩 K🟥⬛⬛ R🟩🟩🟩
-    """
     if not arena.towers:
         return []
 
@@ -141,7 +114,7 @@ def collect_tower_hp_lines(arena: Arena) -> list[str]:
         def bar_or_empty(t: Optional[Dict[str, Any]], base_max: int) -> str:
             if not t:
                 return "⬛⬛⬛"
-            return hp_bar_3(t["hp"], base_max)
+            return hp_bar_3(int(t.get("hp", 0) or 0), base_max)
 
         return (
             f"{label} "
@@ -159,43 +132,54 @@ def collect_tower_hp_lines(arena: Arena) -> list[str]:
 
 
 # ---------------------------------------------------------
-# ELIXIR BARS
+# ELIXIR / ENERGY BARS
 # ---------------------------------------------------------
 
 def elixir_bar(current: int, max_elixir: int = 10) -> str:
-    """
-    Simple elixir bar using 🔮 and ⚫.
-    Example: 🔮🔮🔮⚫⚫⚫⚫⚫⚫⚫
-    """
     current = max(0, min(max_elixir, int(current)))
     return "🔮" * current + "⚫" * (max_elixir - current)
 
 
 def collect_elixir_lines(match) -> list[str]:
     """
-    Expects match.players[i].elixir (0-10).
-    If you haven't added elixir yet, you can stub it as 0.
+    Your Player currently uses energy, not elixir.
+    We'll display energy as "Elixir" on-screen.
     """
     lines: list[str] = []
     for idx, p in enumerate(getattr(match, "players", []), start=1):
-        elixir_value = getattr(p, "elixir", 0)
-        lines.append(f"P{idx} Elixir: {elixir_bar(elixir_value)}")
+        value = getattr(p, "energy", getattr(p, "elixir", 0))
+        lines.append(f"P{idx} Elixir: {elixir_bar(value)}")
     return lines
 
 
 # ---------------------------------------------------------
-# OUTLINE (colored borders for units/towers)
+# BUILD A TEMP GRID WITH TOWERS OVERLAID (NO STATE MUTATION)
 # ---------------------------------------------------------
 
-def outline_tile(base: str, owner_id: int, arena: Arena) -> str:
+def _grid_with_towers(arena: Arena) -> list[list[Optional[dict]]]:
     """
-    Wraps a tile emoji with a colored outline depending on owner.
+    Returns a new grid that is arena.grid + tower markers overlaid.
+    Does NOT modify arena.grid.
     """
-    if owner_id == arena.p1_id:
-        return f"🟦{base}🟦"
-    if owner_id == arena.p2_id:
-        return f"🟥{base}🟥"
-    return base
+    grid = [[arena.get(r, c) for c in range(arena.width)] for r in range(arena.height)]
+
+    if not arena.towers:
+        return grid
+
+    for owner_id, tower_set in arena.towers.items():
+        for name, t in tower_set.items():
+            if int(t.get("hp", 0) or 0) <= 0:
+                continue
+            for (r, c) in t.get("cells", []):
+                if arena.in_bounds(r, c):
+                    grid[r][c] = {
+                        "type": "tower",
+                        "owner": owner_id,
+                        "name": name,
+                        "emoji": t.get("emoji", "🏰"),
+                    }
+
+    return grid
 
 
 # ---------------------------------------------------------
@@ -203,45 +187,26 @@ def outline_tile(base: str, owner_id: int, arena: Arena) -> str:
 # ---------------------------------------------------------
 
 def render_arena_emoji(arena: Arena, match: Optional[object] = None) -> str:
-    """
-    Horizontal Clash Royale style (Discord-aligned):
-    - P1 = left side, P2 = right side
-    - River is 2 columns wide in the middle
-    - Bridges cross BOTH river columns (2 wide, 3 tall) at 1/4 and 3/4 height
-    - Column header is always 1..16
-    """
+    LEFT_PAD = "   "
 
-    LEFT_PAD = "   "  # must match your row label width
-
-    # Keycap digits look like your screenshot (boxed)
     DIGIT_BOX = {
         "0": "0️⃣", "1": "1️⃣", "2": "2️⃣", "3": "3️⃣", "4": "4️⃣",
         "5": "5️⃣", "6": "6️⃣", "7": "7️⃣", "8": "8️⃣", "9": "9️⃣",
     }
 
     def col_header() -> str:
-        # 1..9 then 0 then 1.. (wrap every 10)
         digits = [str((i + 1) % 10) for i in range(arena.width)]
         return LEFT_PAD + "".join(DIGIT_BOX[d] for d in digits)
 
     def row_prefix(r: int) -> str:
-        # exactly 3 chars: "A␠␠"
         return f"{chr(ord('A') + r)}  "
 
-    # --- Clear old tower tiles so we don't duplicate ---
-    for r in range(arena.height):
-        for c in range(arena.width):
-            tile = arena.get(r, c)
-            if isinstance(tile, dict) and tile.get("type") == "tower":
-                arena.set(r, c, None)
-
-    # --- Inject towers freshly ---
-    arena.place_towers_on_grid()
+    # Use a temp grid that includes towers, without mutating arena state
+    grid = _grid_with_towers(arena)
 
     lines: list[str] = []
 
-    # --- Layout constants ---
-    river_cols = [arena.width // 2 - 1, arena.width // 2]  # 2-wide river
+    river_cols = [arena.width // 2 - 1, arena.width // 2]
 
     bridge_centers = [arena.height // 4, arena.height - arena.height // 4 - 1]
     bridge_rows = set()
@@ -250,29 +215,27 @@ def render_arena_emoji(arena: Arena, match: Optional[object] = None) -> str:
             if 0 <= rr < arena.height:
                 bridge_rows.add(rr)
 
-    # --- Header + border ---
     lines.append(col_header())
     border = LEFT_PAD + ("🟦" * arena.width)
     lines.append(border)
 
-    # --- Grid rows ---
     for r in range(arena.height):
         row_tiles: list[str] = []
 
         for c in range(arena.width):
-            tile = arena.get(r, c)
+            tile = grid[r][c]
 
             # Base terrain
             if c in river_cols:
-                base = "🟦"  # water
+                base = "🟦"
             else:
                 base = "🟩" if c < river_cols[0] else "🟪"
 
-            # Bridge override (2 wide river, 3 tall at bridge rows)
+            # Bridge override
             if (r in bridge_rows) and (c in river_cols):
                 base = "🟫"
 
-            # Overlay unit/tower if present
+            # Overlay unit/tower
             if tile is not None:
                 base = tile_to_emoji(tile)
 
@@ -280,16 +243,13 @@ def render_arena_emoji(arena: Arena, match: Optional[object] = None) -> str:
 
         lines.append(row_prefix(r) + "".join(row_tiles))
 
-    # --- Bottom border ---
     lines.append(border)
 
-    # --- Tower HP summary ---
     tower_hp_lines = collect_tower_hp_lines(arena)
     if tower_hp_lines:
         lines.append("")
         lines.extend(tower_hp_lines)
 
-    # --- Elixir bars ---
     if match is not None:
         elixir_lines = collect_elixir_lines(match)
         if elixir_lines:
@@ -318,36 +278,33 @@ def render_arena_ascii(arena: Arena) -> str:
 
 
 # ---------------------------------------------------------
-# SPELL ANIMATION
+# SPELL ANIMATION (NO PERMANENT GRID MUTATION)
 # ---------------------------------------------------------
 
 async def animate_spell(ctx, arena: Arena, match, positions, effect: str):
     """
-    Simulates animated spell effects by flashing emojis on the board.
-    positions = list of (row, col)
-    effect = emoji like '💥', '⚡', '🔥'
+    Flash spell emojis on top of the rendered board.
+    This temporarily overrides arena.grid for rendering only, then restores it.
     """
+    # Snapshot current grid once
+    base = [[arena.get(r, c) for c in range(arena.width)] for r in range(arena.height)]
 
     frames = []
 
     # Frame 1: flash effect
-    temp_grid = [[arena.get(r, c) for c in range(arena.width)] for r in range(arena.height)]
+    temp = [[base[r][c] for c in range(arena.width)] for r in range(arena.height)]
     for r, c in positions:
         if arena.in_bounds(r, c):
-            temp_grid[r][c] = {"emoji": effect}
+            temp[r][c] = {"emoji": effect}
+    frames.append(temp)
 
-    frames.append(temp_grid)
+    # Frame 2: restore
+    frames.append(base)
 
-    # Frame 2: fade
-    frames.append([[arena.get(r, c) for c in range(arena.width)] for r in range(arena.height)])
-
-    # Send frames
     for grid in frames:
-        # temporarily override arena grid
         old = arena.grid
         arena.grid = grid
         await ctx.send(render_arena_emoji(arena, match))
         arena.grid = old
         await asyncio.sleep(0.3)
-
 
